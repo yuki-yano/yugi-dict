@@ -16,6 +16,42 @@ const PREFIX = "＠";
 const SOURCE_REPOSITORY = "https://github.com/DawnbrandBots/yaml-yugi";
 const ATOK_HEADER = "!!ATOK_TANGO_TEXT_HEADER_1";
 const ATOK_READING_LIMIT = 32;
+const PREFIX_MINIMUM_LENGTH = 3;
+
+const DECIMAL_DIGITS = new Map<string, string>([
+  ...[..."０１２３４５６７８９"].map((digit) => [digit, digit] as const),
+  ...[..."0123456789"].map((digit, index) => [digit, [..."０１２３４５６７８９"][index]] as const),
+]);
+const KANJI_DIGITS = new Map<string, string>([
+  ["〇", "０"],
+  ["零", "０"],
+  ["一", "１"],
+  ["壱", "１"],
+  ["二", "２"],
+  ["弐", "２"],
+  ["三", "３"],
+  ["参", "３"],
+  ["四", "４"],
+  ["五", "５"],
+  ["六", "６"],
+  ["七", "７"],
+  ["八", "８"],
+  ["九", "９"],
+]);
+const ROMAN_NUMERALS = new Map<string, number>([
+  ["Ⅰ", 1],
+  ["Ⅱ", 2],
+  ["Ⅲ", 3],
+  ["Ⅳ", 4],
+  ["Ⅴ", 5],
+  ["Ⅵ", 6],
+  ["Ⅶ", 7],
+  ["Ⅷ", 8],
+  ["Ⅸ", 9],
+  ["Ⅹ", 10],
+  ["Ⅺ", 11],
+  ["Ⅻ", 12],
+]);
 
 export type DictionaryEntry = {
   reading: string;
@@ -29,7 +65,16 @@ export type DictionaryStats = {
   duplicateEntries: number;
   dictionaryEntries: number;
   primaryDictionaryEntries: number;
-  aliasEntries: number;
+  structuralAliasEntries: number;
+  prefixAliasEntries: number;
+  numericAliasEntries: number;
+  distinctReadings: number;
+  ambiguousReadings: number;
+  maxCandidatesPerReading: number;
+  topCandidateReadings: Array<{
+    reading: string;
+    candidates: number;
+  }>;
 };
 
 type CliOptions = Record<string, string>;
@@ -62,6 +107,106 @@ function normalizeReading(value: string): string {
   return asciiToFullwidth(katakanaToHiragana(value))
     .replace(/[\p{P}\p{S}\s]/gu, "")
     .normalize("NFC");
+}
+
+function normalizeDecimalDigits(value: string): string {
+  return [...value].map((character) => DECIMAL_DIGITS.get(character) ?? character).join("");
+}
+
+function romanNumeralToReading(value: string): string | undefined {
+  const values = [...value].map((character) => ROMAN_NUMERALS.get(character));
+  if (values.length === 0 || values.some((number) => number == null)) {
+    return undefined;
+  }
+  const numericValues = values.filter((number): number is number => number != null);
+  return normalizeDecimalDigits(String(numericValues.reduce((sum, number) => sum + number, 0)));
+}
+
+export function buildPrefixReadings(readings: Iterable<string>): string[] {
+  const prefixes = new Set<string>();
+  for (const reading of readings) {
+    const characters = [...reading];
+    for (let length = PREFIX_MINIMUM_LENGTH; length < characters.length; length += 1) {
+      prefixes.add(characters.slice(0, length).join(""));
+    }
+  }
+  return [...prefixes].sort(compareText);
+}
+
+export function extractNumericReadings(markup: string): string[] {
+  const numericGroups: string[] = [];
+  let kanjiDigitRun = "";
+  let kanjiDigitCount = 0;
+
+  const flushKanjiDigitRun = (): void => {
+    // A single numeral kanji may be part of an ordinary word, such as 見参.
+    if (kanjiDigitCount >= 2) {
+      numericGroups.push(kanjiDigitRun);
+    }
+    kanjiDigitRun = "";
+    kanjiDigitCount = 0;
+  };
+
+  const appendLiteralNumericGroups = (literal: string): void => {
+    flushKanjiDigitRun();
+    const numericPattern = /[0-9０-９]+|[Ⅰ-Ⅻ]+/gu;
+    for (const match of literal.matchAll(numericPattern)) {
+      const value = match[0];
+      const romanReading = romanNumeralToReading(value);
+      numericGroups.push(romanReading ?? normalizeDecimalDigits(value));
+    }
+  };
+
+  const appendRubyNumericGroup = (surface: string): void => {
+    const characters = [...surface];
+    const decimalDigits = characters.map((character) => DECIMAL_DIGITS.get(character));
+    if (decimalDigits.length > 0 && decimalDigits.every((digit) => digit != null)) {
+      flushKanjiDigitRun();
+      numericGroups.push(decimalDigits.join(""));
+      return;
+    }
+
+    const kanjiDigits = characters.map((character) => KANJI_DIGITS.get(character));
+    if (kanjiDigits.length > 0 && kanjiDigits.every((digit) => digit != null)) {
+      kanjiDigitRun += kanjiDigits.join("");
+      kanjiDigitCount += characters.length;
+      return;
+    }
+
+    flushKanjiDigitRun();
+    const romanReading = romanNumeralToReading(surface);
+    if (romanReading) {
+      numericGroups.push(romanReading);
+    }
+  };
+
+  const rubyPattern = /<ruby>([^<>]+)<rt>[^<>]+<\/rt><\/ruby>/g;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  while ((match = rubyPattern.exec(markup)) !== null) {
+    const literal = markup.slice(cursor, match.index);
+    if (literal.length > 0) {
+      appendLiteralNumericGroups(literal);
+    }
+    appendRubyNumericGroup(match[1]);
+    cursor = rubyPattern.lastIndex;
+  }
+  const tail = markup.slice(cursor);
+  if (tail.length > 0) {
+    appendLiteralNumericGroups(tail);
+  }
+  flushKanjiDigitRun();
+
+  const readings = new Set<string>();
+  for (const group of numericGroups) {
+    const characters = [...group];
+    for (let start = 0; start < characters.length; start += 1) {
+      for (let end = start + 1; end <= characters.length; end += 1) {
+        readings.add(characters.slice(start, end).join(""));
+      }
+    }
+  }
+  return [...readings].sort(compareText);
 }
 
 export function parseJapaneseName(markup: unknown): {
@@ -175,6 +320,9 @@ export async function buildDictionary(inputDirectory: string): Promise<{
 
   const entries: DictionaryEntry[] = [];
   const primaryKeys = new Set<string>();
+  const structuralAliasKeys = new Set<string>();
+  const prefixAliasKeys = new Set<string>();
+  const numericAliasKeys = new Set<string>();
   let missingJapaneseName = 0;
 
   for (const filename of filenames) {
@@ -199,14 +347,20 @@ export async function buildDictionary(inputDirectory: string): Promise<{
     }
 
     let parsed: ReturnType<typeof parseJapaneseName>;
+    let numericReadings: string[];
     try {
+      if (typeof japaneseName !== "string") {
+        throw new Error("name.ja must be a non-empty string");
+      }
       parsed = parseJapaneseName(japaneseName);
+      numericReadings = extractNumericReadings(japaneseName);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`failed to convert ${filename}: ${message}`, { cause: error });
     }
 
-    for (const [index, reading] of [parsed.reading, ...parsed.aliasReadings].entries()) {
+    const baseReadings = [parsed.reading, ...parsed.aliasReadings];
+    for (const [index, reading] of baseReadings.entries()) {
       const entry = {
         reading: `${PREFIX}${reading}`,
         word: `《${parsed.surface}》`,
@@ -215,7 +369,29 @@ export async function buildDictionary(inputDirectory: string): Promise<{
       entries.push(entry);
       if (index === 0) {
         primaryKeys.add(`${entry.reading}\u0000${entry.word}`);
+      } else {
+        structuralAliasKeys.add(`${entry.reading}\u0000${entry.word}`);
       }
+    }
+
+    for (const reading of buildPrefixReadings(baseReadings)) {
+      const entry = {
+        reading: `${PREFIX}${reading}`,
+        word: `《${parsed.surface}》`,
+        pos: MSIME_POS,
+      };
+      entries.push(entry);
+      prefixAliasKeys.add(`${entry.reading}\u0000${entry.word}`);
+    }
+
+    for (const reading of numericReadings) {
+      const entry = {
+        reading: `${PREFIX}${reading}`,
+        word: `《${parsed.surface}》`,
+        pos: MSIME_POS,
+      };
+      entries.push(entry);
+      numericAliasKeys.add(`${entry.reading}\u0000${entry.word}`);
     }
   }
 
@@ -237,15 +413,32 @@ export async function buildDictionary(inputDirectory: string): Promise<{
   }
 
   let primaryDictionaryEntries = 0;
-  let aliasEntries = 0;
+  let structuralAliasEntries = 0;
+  let prefixAliasEntries = 0;
+  let numericAliasEntries = 0;
+  const candidateCounts = new Map<string, number>();
   for (const entry of uniqueEntries) {
     const key = `${entry.reading}\u0000${entry.word}`;
     if (primaryKeys.has(key)) {
       primaryDictionaryEntries += 1;
+    } else if (structuralAliasKeys.has(key)) {
+      structuralAliasEntries += 1;
+    } else if (prefixAliasKeys.has(key)) {
+      prefixAliasEntries += 1;
+    } else if (numericAliasKeys.has(key)) {
+      numericAliasEntries += 1;
     } else {
-      aliasEntries += 1;
+      throw new Error(`dictionary entry has no origin: ${entry.reading} ${entry.word}`);
     }
+    candidateCounts.set(entry.reading, (candidateCounts.get(entry.reading) ?? 0) + 1);
   }
+
+  const candidateReadings = [...candidateCounts].map(([reading, candidates]) => ({
+    reading,
+    candidates,
+  })).sort((left, right) =>
+    right.candidates - left.candidates || compareText(left.reading, right.reading)
+  );
 
   return {
     entries: uniqueEntries,
@@ -255,7 +448,13 @@ export async function buildDictionary(inputDirectory: string): Promise<{
       duplicateEntries,
       dictionaryEntries: uniqueEntries.length,
       primaryDictionaryEntries,
-      aliasEntries,
+      structuralAliasEntries,
+      prefixAliasEntries,
+      numericAliasEntries,
+      distinctReadings: candidateCounts.size,
+      ambiguousReadings: candidateReadings.filter(({ candidates }) => candidates > 1).length,
+      maxCandidatesPerReading: candidateReadings[0]?.candidates ?? 0,
+      topCandidateReadings: candidateReadings.slice(0, 10),
     },
   };
 }
@@ -393,6 +592,8 @@ export async function run(argv: string[]): Promise<void> {
     },
     trigger: {
       prefix: PREFIX,
+      prefixMinimumLength: PREFIX_MINIMUM_LENGTH,
+      numericMinimumLength: 1,
       candidateWrapper: "《…》",
     },
     stats: {
@@ -420,6 +621,7 @@ export const constants = {
   ATOK_POS,
   ATOK_HEADER,
   ATOK_READING_LIMIT,
+  PREFIX_MINIMUM_LENGTH,
   PREFIX,
   SOURCE_REPOSITORY,
 };
