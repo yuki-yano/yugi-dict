@@ -18,6 +18,7 @@ jobs:
     timeout-minutes: 20
     outputs:
       release_tag: ${{ steps.metadata.outputs.release_tag }}
+      release_title: ${{ steps.metadata.outputs.release_title }}
       source_short: ${{ steps.metadata.outputs.source_short }}
     steps:
       - name: Checkout
@@ -66,9 +67,13 @@ jobs:
         run: |
           source_short="${{ steps.source.outputs.ref }}"
           source_short="${source_short:0:12}"
-          generator_short="${GITHUB_SHA:0:12}"
-          echo "source_short=${source_short}" >> "${GITHUB_OUTPUT}"
-          echo "release_tag=data-${source_short}-${generator_short}" >> "${GITHUB_OUTPUT}"
+          release_timestamp="$(TZ=Asia/Tokyo date '+%Y%m%d-%H%M%S')"
+          release_title="$(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M:%S JST')"
+          {
+            echo "source_short=${source_short}"
+            echo "release_tag=dictionary-${release_timestamp}-jst-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "release_title=${release_title}"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -100,19 +105,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
+          RELEASE_TITLE: ${{ needs.build.outputs.release_title }}
           SOURCE_SHORT: ${{ needs.build.outputs.source_short }}
         run: |
-          if ! gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
-            gh release create "${RELEASE_TAG}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --target "${GITHUB_SHA}" \
-              --title "Yu-Gi-Oh! dictionaries ${SOURCE_SHORT}" \
-              --notes "yaml-yugi ${SOURCE_SHORT} から生成したMicrosoft IME・ATOK用辞書です。"
-          fi
-          gh release upload "${RELEASE_TAG}" \
+          gh release create "${RELEASE_TAG}" \
             dist/yugi-dict-msime.txt \
             dist/yugi-dict-atok.txt \
             dist/manifest.json \
-            --clobber \
-            --repo "${GITHUB_REPOSITORY}"
-          gh release edit "${RELEASE_TAG}" --latest --repo "${GITHUB_REPOSITORY}"
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
+            --title "Yu-Gi-Oh! dictionaries - ${RELEASE_TITLE}" \
+            --notes "yaml-yugi ${SOURCE_SHORT} から生成したMicrosoft IME・ATOK用辞書です。" \
+            --latest

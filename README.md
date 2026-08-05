@@ -46,6 +46,8 @@ GitHub Actionsは次のタイミングでyaml-yugiの`master`を取得し、辞�
 
 生成時に使用したyaml-yugiのcommit、収録件数、辞書ファイルのSHA-256は `manifest.json` に記録します。CIは単体テストに加え、全件を対象に文字コード・改行・接頭辞・括弧・重複・ハッシュを検証します。
 
+Releaseは生成のたびに新規作成し、タグとタイトルにJSTの生成日時を含めます。GitHub上では公開日時の新しいReleaseが常に先頭になります。
+
 ローカルで生成する場合はNode.js 24、pnpm 11.20.0、Gitが必要です。
 
 ```sh
