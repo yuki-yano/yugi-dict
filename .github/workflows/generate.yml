@@ -1,0 +1,110 @@
+name: Generate dictionary
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      release_tag: ${{ steps.metadata.outputs.release_tag }}
+      source_short: ${{ steps.metadata.outputs.source_short }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Run unit tests
+        run: npm run check
+
+      - name: Fetch yaml-yugi
+        id: source
+        run: |
+          source_directory="${RUNNER_TEMP}/yaml-yugi"
+          source_ref="$(./scripts/fetch-yaml-yugi.sh "${source_directory}" | tail -n 1)"
+          echo "directory=${source_directory}" >> "${GITHUB_OUTPUT}"
+          echo "ref=${source_ref}" >> "${GITHUB_OUTPUT}"
+
+      - name: Generate dictionary
+        run: |
+          npx tsx src/generate.ts \
+            --input "${{ steps.source.outputs.directory }}/data/cards" \
+            --output dist/yugi-dict-msime.txt \
+            --manifest dist/manifest.json \
+            --source-ref "${{ steps.source.outputs.ref }}"
+
+      - name: Verify generated files
+        run: npx tsx scripts/verify-dist.ts dist
+
+      - name: Build release metadata
+        id: metadata
+        shell: bash
+        run: |
+          source_short="${{ steps.source.outputs.ref }}"
+          source_short="${source_short:0:12}"
+          generator_short="${GITHUB_SHA:0:12}"
+          echo "source_short=${source_short}" >> "${GITHUB_OUTPUT}"
+          echo "release_tag=data-${source_short}-${generator_short}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: yugi-dict-msime-${{ steps.source.outputs.ref }}
+          path: |
+            dist/yugi-dict-msime.txt
+            dist/manifest.json
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download workflow artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: yugi-dict-msime-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
+          SOURCE_SHORT: ${{ needs.build.outputs.source_short }}
+        run: |
+          if ! gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release create "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "${GITHUB_SHA}" \
+              --title "Yu-Gi-Oh! dictionary ${SOURCE_SHORT}" \
+              --notes "yaml-yugi ${SOURCE_SHORT} から生成したMicrosoft IME用辞書です。"
+          fi
+          gh release upload "${RELEASE_TAG}" \
+            dist/yugi-dict-msime.txt \
+            dist/manifest.json \
+            --clobber \
+            --repo "${GITHUB_REPOSITORY}"
+          gh release edit "${RELEASE_TAG}" --latest --repo "${GITHUB_REPOSITORY}"
