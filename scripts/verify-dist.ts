@@ -26,8 +26,9 @@ assert.deepEqual(msimeLines.slice(0, 3), [
 assert.equal(msimeLines.at(-1), "", "MS IME trailing CRLF");
 
 const msimeEntries = msimeLines.slice(3, -1);
-assert.ok(msimeEntries.length >= 150_000, `expected at least 150000 entries, got ${msimeEntries.length}`);
+assert.ok(msimeEntries.length >= 30_000, `expected at least 30000 entries, got ${msimeEntries.length}`);
 const pairs = new Set<string>();
+const readings = new Set<string>();
 for (const [index, line] of msimeEntries.entries()) {
   const columns = line.split("\t");
   assert.equal(columns.length, 3, `line ${index + 4}: column count`);
@@ -38,12 +39,16 @@ for (const [index, line] of msimeEntries.entries()) {
   const pair = `${reading}\u0000${word}`;
   assert.equal(pairs.has(pair), false, `line ${index + 4}: duplicate entry`);
   pairs.add(pair);
+  readings.add(reading);
 }
 
 for (const [reading, word] of [
   ["＠ぶらっく", "《ブラック・マジシャン》"],
-  ["＠りとる", "《Ｓ：Ｐリトルナイト》"],
   ["＠おろかな", "《おろかな埋葬》"],
+  ["＠ざいほう", "《罪宝の囁き》"],
+  ["＠りとる", "《Ｓ：Ｐリトルナイト》"],
+  ["＠ういっち", "《ウィッチクラフト・バイスマスター》"],
+  ["＠ういっち", "《魔女の聖夜行》"],
   ["＠２２４", "《カラクリ小町 弐弐四》"],
   ["＠２４", "《Ｎｏ．２４ 竜血鬼ドラギュラス》"],
   ["＠３", "《アルカナフォースⅢ－ＴＨＥ ＥＭＰＲＥＳＳ》"],
@@ -51,15 +56,22 @@ for (const [reading, word] of [
 ]) {
   assert.equal(pairs.has(`${reading}\u0000${word}`), true, `${reading}: expected candidate ${word}`);
 }
+assert.equal(pairs.has("＠ぶらっ\u0000《ブラック・マジシャン》"), false, "partial word reading");
+assert.equal(readings.has("＠ざいほ"), false, "partial ruby reading");
+assert.equal(pairs.has("＠ひがんのあっ\u0000《彼岸の悪鬼 ラビキャント》"), false, "incomplete sokuon prefix");
 
 const msimeSha256 = createHash("sha256").update(msimeDictionary).digest("hex");
 assert.equal(manifest.outputs.msime.sha256, msimeSha256, "MS IME manifest SHA-256");
 assert.equal(manifest.stats.dictionaryEntries, msimeEntries.length, "MS IME manifest entry count");
-assert.ok(manifest.stats.prefixAliasEntries >= 100_000, "manifest prefix alias count");
+assert.ok(manifest.stats.prefixAliasEntries >= 1_000, "manifest prefix alias count");
+assert.ok(manifest.stats.managedAliasEntries >= 50, "manifest managed alias count");
 assert.ok(manifest.stats.numericAliasEntries >= 500, "manifest numeric alias count");
 assert.ok(manifest.stats.ambiguousReadings > 0, "manifest ambiguous reading count");
 assert.ok(manifest.stats.maxCandidatesPerReading > 1, "manifest maximum candidate count");
-assert.equal(manifest.trigger.prefixMinimumLength, 3);
+assert.equal(manifest.trigger.prefixStrategy, "reading-unit-boundaries");
+assert.equal(manifest.trigger.boundaryReadingMinimumLength, 3);
+assert.deepEqual(manifest.trigger.boundaryReadingEndingsExcluded, ["っ"]);
+assert.equal(manifest.trigger.managedAliasRules, 2);
 assert.equal(manifest.trigger.numericMinimumLength, 1);
 
 assert.deepEqual([...atokDictionary.subarray(0, 2)], [0xff, 0xfe], "ATOK BOM");
@@ -69,8 +81,9 @@ const atokLines = atokText.split("\r\n");
 assert.equal(atokLines[0], "!!ATOK_TANGO_TEXT_HEADER_1", "ATOK header");
 assert.equal(atokLines.at(-1), "", "ATOK trailing CRLF");
 const atokEntries = atokLines.slice(1, -1);
-assert.ok(atokEntries.length >= 150_000, `expected at least 150000 ATOK entries, got ${atokEntries.length}`);
+assert.ok(atokEntries.length >= 30_000, `expected at least 30000 ATOK entries, got ${atokEntries.length}`);
 const atokPairs = new Set<string>();
+const atokReadings = new Set<string>();
 for (const [index, line] of atokEntries.entries()) {
   const columns = line.split("\t");
   assert.equal(columns.length, 3, `ATOK line ${index + 2}: column count`);
@@ -83,16 +96,23 @@ for (const [index, line] of atokEntries.entries()) {
   const pair = `${reading}\u0000${word}`;
   assert.equal(atokPairs.has(pair), false, `ATOK line ${index + 2}: duplicate entry`);
   atokPairs.add(pair);
+  atokReadings.add(reading);
 }
 for (const [reading, word] of [
   ["＠ぶらっく", "《ブラック・マジシャン》"],
-  ["＠りとる", "《Ｓ：Ｐリトルナイト》"],
   ["＠おろかな", "《おろかな埋葬》"],
+  ["＠ざいほう", "《罪宝の囁き》"],
+  ["＠りとる", "《Ｓ：Ｐリトルナイト》"],
+  ["＠ういっち", "《ウィッチクラフト・バイスマスター》"],
+  ["＠ういっち", "《魔女の聖夜行》"],
   ["＠２２４", "《カラクリ小町 弐弐四》"],
   ["＠３００", "《ＴＧＸ３００》"],
 ]) {
   assert.equal(atokPairs.has(`${reading}\u0000${word}`), true, `ATOK ${reading}: expected candidate ${word}`);
 }
+assert.equal(atokPairs.has("＠ぶらっ\u0000《ブラック・マジシャン》"), false, "ATOK partial word reading");
+assert.equal(atokReadings.has("＠ざいほ"), false, "ATOK partial ruby reading");
+assert.equal(atokPairs.has("＠ひがんのあっ\u0000《彼岸の悪鬼 ラビキャント》"), false, "ATOK incomplete sokuon prefix");
 const atokSha256 = createHash("sha256").update(atokDictionary).digest("hex");
 assert.equal(manifest.outputs.atok.sha256, atokSha256, "ATOK manifest SHA-256");
 assert.equal(manifest.stats.atokDictionaryEntries, atokEntries.length, "ATOK manifest entry count");

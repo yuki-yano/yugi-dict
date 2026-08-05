@@ -7,7 +7,7 @@ import test from "node:test";
 import {
   buildDictionary,
   buildAtokDictionary,
-  buildPrefixReadings,
+  buildManagedAliasReadings,
   constants,
   extractNumericReadings,
   parseJapaneseName,
@@ -16,12 +16,37 @@ import {
   serializeMsIme,
 } from "../src/generate.ts";
 
-test("3文字以上の前方読みを作る", () => {
-  assert.deepEqual(buildPrefixReadings(["りとるないと"]), [
-    "りとる",
-    "りとるな",
-    "りとるない",
+test("読み単位の境界だけから前方読みを作る", () => {
+  assert.deepEqual(parseJapaneseName("ブラック・マジシャン").prefixReadings, ["ぶらっく"]);
+  assert.deepEqual(
+    parseJapaneseName(
+      "<ruby>罪<rt>ざい</rt></ruby><ruby>宝<rt>ほう</rt></ruby>の" +
+        "<ruby>囁<rt>ささや</rt></ruby>き",
+    ).prefixReadings,
+    ["ささや", "ざいほう", "ざいほうの", "ざいほうのささや"],
+  );
+  assert.deepEqual(
+    parseJapaneseName(
+      "<ruby>Ｓ<rt>エス</rt></ruby>：<ruby>Ｐ<rt>ピー</rt></ruby>リトルナイト",
+    ).prefixReadings,
+    ["えすぴー"],
+  );
+  assert.equal(
+    parseJapaneseName(
+      "<ruby>彼<rt>ひ</rt></ruby><ruby>岸<rt>がん</rt></ruby>の" +
+        "<ruby>悪<rt>あっ</rt></ruby><ruby>鬼<rt>き</rt></ruby> ラビキャント",
+    ).prefixReadings.includes("ひがんのあっ"),
+    false,
+  );
+});
+
+test("管理済み別名は対象の複合語と入力揺れだけに追加する", () => {
+  assert.deepEqual(buildManagedAliasReadings(["りとるないと"]), ["りとる"]);
+  assert.deepEqual(buildManagedAliasReadings(["うぃっちくらふとばいすますたー"]), [
+    "うぃっち",
+    "ういっち",
   ]);
+  assert.deepEqual(buildManagedAliasReadings(["くりしゅなーどうぃっち", "うぃっち"]), []);
 });
 
 test("カード名中の数列から1文字以上の部分読みを作る", () => {
@@ -56,6 +81,7 @@ test("rubyから正式名称と読みを組み立てる", () => {
       surface: "万物創世龍",
       reading: "てんさうざんどどらごん",
       aliasReadings: [],
+      prefixReadings: [],
     },
   );
 });
@@ -69,6 +95,13 @@ test("装飾記号を読みから除き、英数字は全角のまま保持す�
       surface: "Ｎｏ．３９ 希望皇ホープ",
       reading: "なんばーず３９きぼうおうほーぷ",
       aliasReadings: ["きぼうおうほーぷ", "ほーぷ", "３９きぼうおうほーぷ"],
+      prefixReadings: [
+        "きぼうおう",
+        "なんばーず",
+        "なんばーず３９",
+        "なんばーず３９きぼうおう",
+        "３９きぼうおう",
+      ],
     },
   );
 });
@@ -87,6 +120,7 @@ test("カード名の構造境界から検索用の別名読みを作る", () =>
       surface: "Ｓ：Ｐリトルナイト",
       reading: "えすぴーりとるないと",
       aliasReadings: ["ぴーりとるないと", "りとるないと"],
+      prefixReadings: ["えすぴー"],
     },
   );
 });
@@ -111,7 +145,7 @@ test("辞書エントリは＠で始まり、候補を《》で囲み、重複�
     result.entries.some(({ reading, word }) =>
       reading === "＠ぶらっ" && word === "《ブラック・マジシャン》"
     ),
-    true,
+    false,
   );
   assert.equal(
     result.entries.some(({ reading, word }) =>
@@ -123,14 +157,15 @@ test("辞書エントリは＠で始まり、候補を《》で囲み、重複�
     result.entries.some(({ reading, word }) =>
       reading === "＠まじし" && word === "《ブラック・マジシャン》"
     ),
-    true,
+    false,
   );
   assert.equal(new Set(result.entries.map(({ reading, word }) => `${reading}\u0000${word}`)).size, result.entries.length);
   assert.equal(result.stats.sourceFiles, 3);
   assert.equal(result.stats.missingJapaneseName, 1);
   assert.equal(result.stats.primaryDictionaryEntries, 1);
   assert.equal(result.stats.structuralAliasEntries, 1);
-  assert.ok(result.stats.prefixAliasEntries > 1);
+  assert.equal(result.stats.prefixAliasEntries, 1);
+  assert.equal(result.stats.managedAliasEntries, 0);
   assert.equal(result.stats.numericAliasEntries, 0);
   assert.equal(result.stats.maxCandidatesPerReading, 1);
 });
@@ -148,6 +183,11 @@ test("短いかな読みと数字読みで複数候補を残す", async () => {
     "アルカナフォース<ruby>Ⅲ<rt>スリー</rt></ruby>－" +
       "<ruby>ＴＨＥ ＥＭＰＲＥＳＳ<rt>ジ・エンプレス</rt></ruby>",
     "ＴＧＸ３００",
+    "ウィッチクラフト・バイスマスター",
+    "<ruby>魔女の聖夜行<rt>ウィッチクラフト・ワルプルギース</rt></ruby>",
+    "クリシュナード・ウィッチ",
+    "<ruby>罪<rt>ざい</rt></ruby><ruby>宝<rt>ほう</rt></ruby>の" +
+      "<ruby>囁<rt>ささや</rt></ruby>き",
   ];
   await Promise.all(cards.map((japaneseName, index) =>
     fs.writeFile(
@@ -164,6 +204,15 @@ test("短いかな読みと数字読みで複数候補を残す", async () => {
     "《リトル・フェアリー》",
     "《Ｓ：Ｐリトルナイト》",
   ]);
+  assert.deepEqual(candidatesAt("＠ういっち"), [
+    "《ウィッチクラフト・バイスマスター》",
+    "《魔女の聖夜行》",
+  ]);
+  assert.deepEqual(candidatesAt("＠うぃっち"), [
+    "《ウィッチクラフト・バイスマスター》",
+    "《クリシュナード・ウィッチ》",
+    "《魔女の聖夜行》",
+  ]);
   assert.deepEqual(candidatesAt("＠おろかな"), [
     "《おろかな副葬》",
     "《おろかな埋葬》",
@@ -175,8 +224,11 @@ test("短いかな読みと数字読みで複数候補を残す", async () => {
   ]);
   assert.equal(candidatesAt("＠３").includes("《アルカナフォースⅢ－ＴＨＥ ＥＭＰＲＥＳＳ》"), true);
   assert.equal(candidatesAt("＠３００").includes("《ＴＧＸ３００》"), true);
+  assert.deepEqual(candidatesAt("＠ざいほう"), ["《罪宝の囁き》"]);
+  assert.deepEqual(candidatesAt("＠ざいほ"), []);
   assert.ok(stats.ambiguousReadings > 0);
   assert.ok(stats.numericAliasEntries > 0);
+  assert.equal(stats.managedAliasEntries, 5);
 });
 
 test("MS IME WORDLISTをUTF-16LE BOM・CRLFで直列化する", () => {
@@ -248,7 +300,10 @@ test("CLIが辞書と再現可能性manifestを出力する", async () => {
   const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
   assert.equal(manifest.source.commit, "a".repeat(40));
   assert.equal(manifest.trigger.prefix, "＠");
-  assert.equal(manifest.trigger.prefixMinimumLength, 3);
+  assert.equal(manifest.trigger.prefixStrategy, "reading-unit-boundaries");
+  assert.equal(manifest.trigger.boundaryReadingMinimumLength, 3);
+  assert.deepEqual(manifest.trigger.boundaryReadingEndingsExcluded, ["っ"]);
+  assert.equal(manifest.trigger.managedAliasRules, 2);
   assert.equal(manifest.trigger.numericMinimumLength, 1);
   assert.equal(manifest.trigger.candidateWrapper, "《…》");
   assert.match(manifest.outputs.msime.sha256, /^[0-9a-f]{64}$/u);
@@ -256,6 +311,7 @@ test("CLIが辞書と再現可能性manifestを出力する", async () => {
   assert.ok(manifest.stats.dictionaryEntries > 2);
   assert.equal(manifest.stats.structuralAliasEntries, 1);
   assert.ok(manifest.stats.prefixAliasEntries > 0);
+  assert.equal(manifest.stats.managedAliasEntries, 0);
   assert.equal(manifest.stats.numericAliasEntries, 0);
   assert.equal(manifest.stats.atokDictionaryEntries, manifest.stats.dictionaryEntries);
 });

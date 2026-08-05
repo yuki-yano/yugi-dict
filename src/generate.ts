@@ -16,7 +16,17 @@ const PREFIX = "＠";
 const SOURCE_REPOSITORY = "https://github.com/DawnbrandBots/yaml-yugi";
 const ATOK_HEADER = "!!ATOK_TANGO_TEXT_HEADER_1";
 const ATOK_READING_LIMIT = 32;
-const PREFIX_MINIMUM_LENGTH = 3;
+const BOUNDARY_READING_MINIMUM_LENGTH = 3;
+const MANAGED_ALIAS_RULES = [
+  {
+    sourcePrefix: "りとるないと",
+    aliases: ["りとる"],
+  },
+  {
+    sourcePrefix: "うぃっちくらふと",
+    aliases: ["うぃっち", "ういっち"],
+  },
+] as const;
 
 const DECIMAL_DIGITS = new Map<string, string>([
   ...[..."０１２３４５６７８９"].map((digit) => [digit, digit] as const),
@@ -67,6 +77,7 @@ export type DictionaryStats = {
   primaryDictionaryEntries: number;
   structuralAliasEntries: number;
   prefixAliasEntries: number;
+  managedAliasEntries: number;
   numericAliasEntries: number;
   distinctReadings: number;
   ambiguousReadings: number;
@@ -120,17 +131,6 @@ function romanNumeralToReading(value: string): string | undefined {
   }
   const numericValues = values.filter((number): number is number => number != null);
   return normalizeDecimalDigits(String(numericValues.reduce((sum, number) => sum + number, 0)));
-}
-
-export function buildPrefixReadings(readings: Iterable<string>): string[] {
-  const prefixes = new Set<string>();
-  for (const reading of readings) {
-    const characters = [...reading];
-    for (let length = PREFIX_MINIMUM_LENGTH; length < characters.length; length += 1) {
-      prefixes.add(characters.slice(0, length).join(""));
-    }
-  }
-  return [...prefixes].sort(compareText);
 }
 
 export function extractNumericReadings(markup: string): string[] {
@@ -213,6 +213,7 @@ export function parseJapaneseName(markup: unknown): {
   surface: string;
   reading: string;
   aliasReadings: string[];
+  prefixReadings: string[];
 } {
   if (typeof markup !== "string" || markup.length === 0) {
     throw new Error("name.ja must be a non-empty string");
@@ -290,6 +291,7 @@ export function parseJapaneseName(markup: unknown): {
     text: normalizeReading(unit.text),
   })).filter((unit) => unit.text.length > 0);
   const aliasReadings = new Set<string>();
+  const baseReadingStartIndexes = [0];
   for (let index = 1; index < normalizedUnits.length; index += 1) {
     const unit = normalizedUnits[index];
     const previousUnit = normalizedUnits[index - 1];
@@ -300,6 +302,22 @@ export function parseJapaneseName(markup: unknown): {
     const alias = normalizedUnits.slice(index).map(({ text }) => text).join("");
     if (alias !== normalizedReading) {
       aliasReadings.add(alias);
+      baseReadingStartIndexes.push(index);
+    }
+  }
+
+  const prefixReadings = new Set<string>();
+  for (const startIndex of baseReadingStartIndexes) {
+    for (let endIndex = startIndex + 1; endIndex < normalizedUnits.length; endIndex += 1) {
+      const prefix = normalizedUnits.slice(startIndex, endIndex)
+        .map(({ text }) => text)
+        .join("");
+      if (
+        [...prefix].length >= BOUNDARY_READING_MINIMUM_LENGTH &&
+        !prefix.endsWith("っ")
+      ) {
+        prefixReadings.add(prefix);
+      }
     }
   }
 
@@ -307,7 +325,20 @@ export function parseJapaneseName(markup: unknown): {
     surface,
     reading: normalizedReading,
     aliasReadings: [...aliasReadings].sort(compareText),
+    prefixReadings: [...prefixReadings].sort(compareText),
   };
+}
+
+export function buildManagedAliasReadings(baseReadings: readonly string[]): string[] {
+  const aliases = new Set<string>();
+  for (const rule of MANAGED_ALIAS_RULES) {
+    if (baseReadings.some((reading) => reading.startsWith(rule.sourcePrefix))) {
+      for (const alias of rule.aliases) {
+        aliases.add(alias);
+      }
+    }
+  }
+  return [...aliases].sort(compareText);
 }
 
 export async function buildDictionary(inputDirectory: string): Promise<{
@@ -322,6 +353,7 @@ export async function buildDictionary(inputDirectory: string): Promise<{
   const primaryKeys = new Set<string>();
   const structuralAliasKeys = new Set<string>();
   const prefixAliasKeys = new Set<string>();
+  const managedAliasKeys = new Set<string>();
   const numericAliasKeys = new Set<string>();
   let missingJapaneseName = 0;
 
@@ -374,7 +406,7 @@ export async function buildDictionary(inputDirectory: string): Promise<{
       }
     }
 
-    for (const reading of buildPrefixReadings(baseReadings)) {
+    for (const reading of parsed.prefixReadings) {
       const entry = {
         reading: `${PREFIX}${reading}`,
         word: `《${parsed.surface}》`,
@@ -382,6 +414,16 @@ export async function buildDictionary(inputDirectory: string): Promise<{
       };
       entries.push(entry);
       prefixAliasKeys.add(`${entry.reading}\u0000${entry.word}`);
+    }
+
+    for (const reading of buildManagedAliasReadings(baseReadings)) {
+      const entry = {
+        reading: `${PREFIX}${reading}`,
+        word: `《${parsed.surface}》`,
+        pos: MSIME_POS,
+      };
+      entries.push(entry);
+      managedAliasKeys.add(`${entry.reading}\u0000${entry.word}`);
     }
 
     for (const reading of numericReadings) {
@@ -415,6 +457,7 @@ export async function buildDictionary(inputDirectory: string): Promise<{
   let primaryDictionaryEntries = 0;
   let structuralAliasEntries = 0;
   let prefixAliasEntries = 0;
+  let managedAliasEntries = 0;
   let numericAliasEntries = 0;
   const candidateCounts = new Map<string, number>();
   for (const entry of uniqueEntries) {
@@ -425,6 +468,8 @@ export async function buildDictionary(inputDirectory: string): Promise<{
       structuralAliasEntries += 1;
     } else if (prefixAliasKeys.has(key)) {
       prefixAliasEntries += 1;
+    } else if (managedAliasKeys.has(key)) {
+      managedAliasEntries += 1;
     } else if (numericAliasKeys.has(key)) {
       numericAliasEntries += 1;
     } else {
@@ -450,6 +495,7 @@ export async function buildDictionary(inputDirectory: string): Promise<{
       primaryDictionaryEntries,
       structuralAliasEntries,
       prefixAliasEntries,
+      managedAliasEntries,
       numericAliasEntries,
       distinctReadings: candidateCounts.size,
       ambiguousReadings: candidateReadings.filter(({ candidates }) => candidates > 1).length,
@@ -592,7 +638,10 @@ export async function run(argv: string[]): Promise<void> {
     },
     trigger: {
       prefix: PREFIX,
-      prefixMinimumLength: PREFIX_MINIMUM_LENGTH,
+      prefixStrategy: "reading-unit-boundaries",
+      boundaryReadingMinimumLength: BOUNDARY_READING_MINIMUM_LENGTH,
+      boundaryReadingEndingsExcluded: ["っ"],
+      managedAliasRules: MANAGED_ALIAS_RULES.length,
       numericMinimumLength: 1,
       candidateWrapper: "《…》",
     },
@@ -621,7 +670,7 @@ export const constants = {
   ATOK_POS,
   ATOK_HEADER,
   ATOK_READING_LIMIT,
-  PREFIX_MINIMUM_LENGTH,
+  BOUNDARY_READING_MINIMUM_LENGTH,
   PREFIX,
   SOURCE_REPOSITORY,
 };
