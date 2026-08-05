@@ -40,7 +40,7 @@ ATOK形式の読みは32文字以内という制約があるため、これを�
 GitHub Actionsは次のタイミングでyaml-yugiの`master`を取得し、辞書を生成します。
 
 - `main`へのpush
-- 毎日 03:17 UTC の定期実行
+- 毎日 03:00 JST（前日の18:00 UTC）の定期実行
 - Actions画面からの手動実行
 - pull request（artifact生成のみ）
 
