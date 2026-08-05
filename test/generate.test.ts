@@ -41,12 +41,16 @@ test("読み単位の境界だけから前方読みを作る", () => {
 });
 
 test("管理済み別名は対象の複合語と入力揺れだけに追加する", () => {
-  assert.deepEqual(buildManagedAliasReadings(["りとるないと"]), ["りとる"]);
+  assert.deepEqual(buildManagedAliasReadings(["りとるないと"]), []);
   assert.deepEqual(buildManagedAliasReadings(["うぃっちくらふとばいすますたー"]), [
     "うぃっち",
     "ういっち",
   ]);
-  assert.deepEqual(buildManagedAliasReadings(["くりしゅなーどうぃっち", "うぃっち"]), []);
+  assert.deepEqual(buildManagedAliasReadings(["くりしゅなーどうぃっち"]), [
+    "うぃっち",
+    "ういっち",
+  ]);
+  assert.deepEqual(buildManagedAliasReadings(["すうぃっちひーろー"]), []);
 });
 
 test("カード名中の数列から1文字以上の部分読みを作る", () => {
@@ -188,11 +192,31 @@ test("短いかな読みと数字読みで複数候補を残す", async () => {
     "クリシュナード・ウィッチ",
     "<ruby>罪<rt>ざい</rt></ruby><ruby>宝<rt>ほう</rt></ruby>の" +
       "<ruby>囁<rt>ささや</rt></ruby>き",
+    "<ruby>黒薔薇の魔女<rt>ブラック・ローズ・ウィッチ</rt></ruby>",
+    "<ruby>ＷＷ<rt>ウィンド・ウィッチ</rt></ruby>－ウィンター・ベル",
+    "ドドドウィッチ",
+    "メメント・エンウィッチ",
+    "スウィッチヒーロー",
   ];
+  const romajiByIndex = new Map<number, string>([
+    [0, "Esu:Pī Ritoru Naito"],
+    [8, "Witchikurafuto Baisumasutā"],
+    [9, "Witchikurafuto Warupurugīsu"],
+    [12, "Burakku Rōzu Witchi"],
+    [13, "Windo Witchi - Wintā Beru"],
+    [14, "Dododo Witchi"],
+    [15, "Memento Enwitchi"],
+    [16, "Suwitchi Hīrō"],
+  ]);
   await Promise.all(cards.map((japaneseName, index) =>
     fs.writeFile(
       path.join(fixtureDirectory, `${index}.json`),
-      JSON.stringify({ name: { ja: japaneseName } }),
+      JSON.stringify({
+        name: {
+          ja: japaneseName,
+          ...(romajiByIndex.has(index) ? { ja_romaji: romajiByIndex.get(index) } : {}),
+        },
+      }),
     )
   ));
 
@@ -204,15 +228,23 @@ test("短いかな読みと数字読みで複数候補を残す", async () => {
     "《リトル・フェアリー》",
     "《Ｓ：Ｐリトルナイト》",
   ]);
-  assert.deepEqual(candidatesAt("＠ういっち"), [
-    "《ウィッチクラフト・バイスマスター》",
-    "《魔女の聖夜行》",
-  ]);
-  assert.deepEqual(candidatesAt("＠うぃっち"), [
+  const expectedWitchCandidates = [
     "《ウィッチクラフト・バイスマスター》",
     "《クリシュナード・ウィッチ》",
+    "《ドドドウィッチ》",
+    "《メメント・エンウィッチ》",
+    "《黒薔薇の魔女》",
     "《魔女の聖夜行》",
-  ]);
+    "《ＷＷ－ウィンター・ベル》",
+  ];
+  for (const reading of ["＠うぃっち", "＠ういっち"]) {
+    const candidates = candidatesAt(reading);
+    assert.equal(candidates.length, expectedWitchCandidates.length);
+    for (const expected of expectedWitchCandidates) {
+      assert.equal(candidates.includes(expected), true, `${reading}: ${expected}`);
+    }
+    assert.equal(candidates.includes("《スウィッチヒーロー》"), false);
+  }
   assert.deepEqual(candidatesAt("＠おろかな"), [
     "《おろかな副葬》",
     "《おろかな埋葬》",
@@ -228,7 +260,9 @@ test("短いかな読みと数字読みで複数候補を残す", async () => {
   assert.deepEqual(candidatesAt("＠ざいほ"), []);
   assert.ok(stats.ambiguousReadings > 0);
   assert.ok(stats.numericAliasEntries > 0);
-  assert.equal(stats.managedAliasEntries, 5);
+  assert.ok(stats.managedAliasEntries > 0);
+  assert.ok(stats.wordAliasEntries > 0);
+  assert.ok(stats.wordPrefixAliasEntries > 0);
 });
 
 test("MS IME WORDLISTをUTF-16LE BOM・CRLFで直列化する", () => {
@@ -300,10 +334,12 @@ test("CLIが辞書と再現可能性manifestを出力する", async () => {
   const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
   assert.equal(manifest.source.commit, "a".repeat(40));
   assert.equal(manifest.trigger.prefix, "＠");
-  assert.equal(manifest.trigger.prefixStrategy, "reading-unit-boundaries");
+  assert.equal(manifest.trigger.prefixStrategy, "structured-and-romaji-word-boundaries");
   assert.equal(manifest.trigger.boundaryReadingMinimumLength, 3);
   assert.deepEqual(manifest.trigger.boundaryReadingEndingsExcluded, ["っ"]);
-  assert.equal(manifest.trigger.managedAliasRules, 2);
+  assert.equal(manifest.trigger.wordBoundarySource, "name.ja_romaji");
+  assert.equal(manifest.trigger.wordBoundaryAlignment, "wanakana-romaji");
+  assert.equal(manifest.trigger.managedAliasRules, 1);
   assert.equal(manifest.trigger.numericMinimumLength, 1);
   assert.equal(manifest.trigger.candidateWrapper, "《…》");
   assert.match(manifest.outputs.msime.sha256, /^[0-9a-f]{64}$/u);
@@ -312,6 +348,8 @@ test("CLIが辞書と再現可能性manifestを出力する", async () => {
   assert.equal(manifest.stats.structuralAliasEntries, 1);
   assert.ok(manifest.stats.prefixAliasEntries > 0);
   assert.equal(manifest.stats.managedAliasEntries, 0);
+  assert.equal(manifest.stats.wordBoundaryAlignedCards, 0);
+  assert.equal(manifest.stats.wordBoundaryAlignmentFailures, 1);
   assert.equal(manifest.stats.numericAliasEntries, 0);
   assert.equal(manifest.stats.atokDictionaryEntries, manifest.stats.dictionaryEntries);
 });

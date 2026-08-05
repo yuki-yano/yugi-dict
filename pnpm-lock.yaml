@@ -7,6 +7,10 @@ settings:
 importers:
 
   .:
+    dependencies:
+      wanakana:
+        specifier: 5.3.1
+        version: 5.3.1
     devDependencies:
       '@types/node':
         specifier: ^24.0.0
@@ -202,6 +206,10 @@ packages:
   undici-types@7.18.2:
     resolution: {integrity: sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w==}
 
+  wanakana@5.3.1:
+    resolution: {integrity: sha512-OSDqupzTlzl2LGyqTdhcXcl6ezMiFhcUwLBP8YKaBIbMYW1wAwDvupw2T9G9oVaKT9RmaSpyTXjxddFPUcFFIw==}
+    engines: {node: '>=12'}
+
 snapshots:
 
   '@esbuild/aix-ppc64@0.28.1':
@@ -327,3 +335,5 @@ snapshots:
   typescript@5.9.3: {}
 
   undici-types@7.18.2: {}
+
+  wanakana@5.3.1: {}

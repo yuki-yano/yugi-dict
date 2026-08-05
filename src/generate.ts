@@ -5,6 +5,8 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { buildWordBoundaryReadings } from "./word-boundaries.ts";
+
 const HEADER = [
   "!Microsoft IME Dictionary Tool",
   "!Version:",
@@ -19,11 +21,9 @@ const ATOK_READING_LIMIT = 32;
 const BOUNDARY_READING_MINIMUM_LENGTH = 3;
 const MANAGED_ALIAS_RULES = [
   {
-    sourcePrefix: "りとるないと",
-    aliases: ["りとる"],
-  },
-  {
-    sourcePrefix: "うぃっちくらふと",
+    containedTerm: "うぃっち",
+    // 「スウィッチ」は witch ではなく switch の読みなので候補から除く。
+    excludedPreviousCharacter: "す",
     aliases: ["うぃっち", "ういっち"],
   },
 ] as const;
@@ -77,8 +77,12 @@ export type DictionaryStats = {
   primaryDictionaryEntries: number;
   structuralAliasEntries: number;
   prefixAliasEntries: number;
+  wordAliasEntries: number;
+  wordPrefixAliasEntries: number;
   managedAliasEntries: number;
   numericAliasEntries: number;
+  wordBoundaryAlignedCards: number;
+  wordBoundaryAlignmentFailures: number;
   distinctReadings: number;
   ambiguousReadings: number;
   maxCandidatesPerReading: number;
@@ -332,7 +336,17 @@ export function parseJapaneseName(markup: unknown): {
 export function buildManagedAliasReadings(baseReadings: readonly string[]): string[] {
   const aliases = new Set<string>();
   for (const rule of MANAGED_ALIAS_RULES) {
-    if (baseReadings.some((reading) => reading.startsWith(rule.sourcePrefix))) {
+    const hasEligibleOccurrence = baseReadings.some((reading) => {
+      let index = reading.indexOf(rule.containedTerm);
+      while (index >= 0) {
+        if (index === 0 || reading[index - 1] !== rule.excludedPreviousCharacter) {
+          return true;
+        }
+        index = reading.indexOf(rule.containedTerm, index + 1);
+      }
+      return false;
+    });
+    if (hasEligibleOccurrence) {
       for (const alias of rule.aliases) {
         aliases.add(alias);
       }
@@ -353,9 +367,13 @@ export async function buildDictionary(inputDirectory: string): Promise<{
   const primaryKeys = new Set<string>();
   const structuralAliasKeys = new Set<string>();
   const prefixAliasKeys = new Set<string>();
+  const wordAliasKeys = new Set<string>();
+  const wordPrefixAliasKeys = new Set<string>();
   const managedAliasKeys = new Set<string>();
   const numericAliasKeys = new Set<string>();
   let missingJapaneseName = 0;
+  let wordBoundaryAlignedCards = 0;
+  let wordBoundaryAlignmentFailures = 0;
 
   for (const filename of filenames) {
     const filePath = path.join(inputDirectory, filename);
@@ -372,6 +390,12 @@ export async function buildDictionary(inputDirectory: string): Promise<{
       "name" in card && typeof card.name === "object" && card.name !== null &&
       "ja" in card.name
         ? card.name.ja
+        : undefined;
+    const japaneseRomaji =
+      typeof card === "object" && card !== null &&
+      "name" in card && typeof card.name === "object" && card.name !== null &&
+      "ja_romaji" in card.name && typeof card.name.ja_romaji === "string"
+        ? card.name.ja_romaji
         : undefined;
     if (japaneseName == null) {
       missingJapaneseName += 1;
@@ -392,6 +416,15 @@ export async function buildDictionary(inputDirectory: string): Promise<{
     }
 
     const baseReadings = [parsed.reading, ...parsed.aliasReadings];
+    const wordBoundaries = japaneseRomaji == null
+      ? undefined
+      : buildWordBoundaryReadings(parsed.reading, japaneseRomaji);
+    if (wordBoundaries == null) {
+      wordBoundaryAlignmentFailures += 1;
+    } else {
+      wordBoundaryAlignedCards += 1;
+    }
+
     for (const [index, reading] of baseReadings.entries()) {
       const entry = {
         reading: `${PREFIX}${reading}`,
@@ -416,7 +449,31 @@ export async function buildDictionary(inputDirectory: string): Promise<{
       prefixAliasKeys.add(`${entry.reading}\u0000${entry.word}`);
     }
 
-    for (const reading of buildManagedAliasReadings(baseReadings)) {
+    for (const reading of wordBoundaries?.aliasReadings ?? []) {
+      const entry = {
+        reading: `${PREFIX}${reading}`,
+        word: `《${parsed.surface}》`,
+        pos: MSIME_POS,
+      };
+      entries.push(entry);
+      wordAliasKeys.add(`${entry.reading}\u0000${entry.word}`);
+    }
+
+    for (const reading of wordBoundaries?.prefixReadings ?? []) {
+      const entry = {
+        reading: `${PREFIX}${reading}`,
+        word: `《${parsed.surface}》`,
+        pos: MSIME_POS,
+      };
+      entries.push(entry);
+      wordPrefixAliasKeys.add(`${entry.reading}\u0000${entry.word}`);
+    }
+
+    const searchableReadings = [
+      ...baseReadings,
+      ...(wordBoundaries?.aliasReadings ?? []),
+    ];
+    for (const reading of buildManagedAliasReadings(searchableReadings)) {
       const entry = {
         reading: `${PREFIX}${reading}`,
         word: `《${parsed.surface}》`,
@@ -457,6 +514,8 @@ export async function buildDictionary(inputDirectory: string): Promise<{
   let primaryDictionaryEntries = 0;
   let structuralAliasEntries = 0;
   let prefixAliasEntries = 0;
+  let wordAliasEntries = 0;
+  let wordPrefixAliasEntries = 0;
   let managedAliasEntries = 0;
   let numericAliasEntries = 0;
   const candidateCounts = new Map<string, number>();
@@ -468,6 +527,10 @@ export async function buildDictionary(inputDirectory: string): Promise<{
       structuralAliasEntries += 1;
     } else if (prefixAliasKeys.has(key)) {
       prefixAliasEntries += 1;
+    } else if (wordAliasKeys.has(key)) {
+      wordAliasEntries += 1;
+    } else if (wordPrefixAliasKeys.has(key)) {
+      wordPrefixAliasEntries += 1;
     } else if (managedAliasKeys.has(key)) {
       managedAliasEntries += 1;
     } else if (numericAliasKeys.has(key)) {
@@ -495,8 +558,12 @@ export async function buildDictionary(inputDirectory: string): Promise<{
       primaryDictionaryEntries,
       structuralAliasEntries,
       prefixAliasEntries,
+      wordAliasEntries,
+      wordPrefixAliasEntries,
       managedAliasEntries,
       numericAliasEntries,
+      wordBoundaryAlignedCards,
+      wordBoundaryAlignmentFailures,
       distinctReadings: candidateCounts.size,
       ambiguousReadings: candidateReadings.filter(({ candidates }) => candidates > 1).length,
       maxCandidatesPerReading: candidateReadings[0]?.candidates ?? 0,
@@ -638,9 +705,11 @@ export async function run(argv: string[]): Promise<void> {
     },
     trigger: {
       prefix: PREFIX,
-      prefixStrategy: "reading-unit-boundaries",
+      prefixStrategy: "structured-and-romaji-word-boundaries",
       boundaryReadingMinimumLength: BOUNDARY_READING_MINIMUM_LENGTH,
       boundaryReadingEndingsExcluded: ["っ"],
+      wordBoundarySource: "name.ja_romaji",
+      wordBoundaryAlignment: "wanakana-romaji",
       managedAliasRules: MANAGED_ALIAS_RULES.length,
       numericMinimumLength: 1,
       candidateWrapper: "《…》",
