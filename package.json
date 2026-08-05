@@ -3,11 +3,12 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@11.20.0",
   "scripts": {
     "generate": "tsx src/generate.ts",
     "test": "tsx --test test/**/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm test"
+    "check": "pnpm run typecheck && pnpm test"
   },
   "engines": {
     "node": ">=24"
